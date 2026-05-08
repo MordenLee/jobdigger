@@ -1,7 +1,7 @@
 import json
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Tuple
 from urllib.parse import urlsplit, urlunsplit
 
@@ -50,6 +50,7 @@ class PipelineInput:
     enable_liepin: bool = False
     enable_waiqi: bool = True
     enable_51job: bool = False
+    score_keywords: Dict[str, List[str]] = field(default_factory=dict)
 
 
 EDU_LEVEL = {
@@ -77,6 +78,43 @@ BUSINESS_VOCAB = [
     "医药", "生物", "临床", "金融", "保险", "电商", "零售", "物流", "供应链", "制造",
     "教育", "消费", "快消", "汽车", "互联网", "游戏", "政务", "能源", "地产", "to b",
 ]
+
+DEFAULT_SCORE_KEYWORDS = {
+    "company_platform": ["外企", "外商", "国企", "央企", "上市", "头部", "龙头", "合资"],
+    "commute_distance": ["锦江", "青羊", "金牛", "武侯", "成华", "高新区", "天府新区"],
+    "experience_requirement": ["1-3年", "3-5年", "经验不限", "可放宽"],
+    "core_match": ["sql", "python", "数据分析", "数据治理", "运营分析", "看板"],
+}
+
+
+def _normalize_score_keywords(raw: Any) -> Dict[str, List[str]]:
+    if not isinstance(raw, dict):
+        return {}
+    normalized: Dict[str, List[str]] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str):
+            continue
+        if not isinstance(value, list):
+            continue
+        items = [str(v).strip() for v in value if str(v).strip()]
+        if items:
+            normalized[key] = items
+    return normalized
+
+
+def _keywords_for(config: PipelineInput, key: str) -> List[str]:
+    if key in config.score_keywords and config.score_keywords[key]:
+        return config.score_keywords[key]
+    return DEFAULT_SCORE_KEYWORDS.get(key, [])
+
+
+def _keyword_ratio_score(text: str, keywords: List[str], max_score: float) -> float:
+    cleaned = [k.strip().lower() for k in (keywords or []) if str(k).strip()]
+    if not cleaned:
+        return 0.0
+    t = (text or "").lower()
+    hits = sum(1 for k in cleaned if k in t)
+    return round(min(max_score, max_score * hits / len(cleaned)), 2)
 
 
 def _contains_excluded_word(job: Dict[str, Any]) -> bool:
@@ -158,7 +196,7 @@ def _contains_block_words(job: Dict[str, Any]) -> bool:
     return any(w in text for w in BLOCK_WORDS)
 
 
-def _company_nature_score(job: Dict[str, Any]) -> float:
+def _company_nature_score(job: Dict[str, Any], company_keywords: List[str]) -> float:
     text = " ".join(
         [
             str(job.get("company", "")),
@@ -168,6 +206,10 @@ def _company_nature_score(job: Dict[str, Any]) -> float:
             str(job.get("company_intro", ""))[:500],
         ]
     )
+
+    configured = _keyword_ratio_score(text, company_keywords, 20.0)
+    if configured > 0:
+        return configured
 
     if any(k in text for k in ["外企", "外商", "知名国企", "央企"]):
         return 20.0
@@ -182,7 +224,7 @@ def _company_nature_score(job: Dict[str, Any]) -> float:
     return 5.0
 
 
-def _commute_score(job: Dict[str, Any]) -> float:
+def _commute_score(job: Dict[str, Any], commute_keywords: List[str]) -> float:
     text = " ".join(
         [
             str(job.get("location", "")),
@@ -191,6 +233,10 @@ def _commute_score(job: Dict[str, Any]) -> float:
             str(job.get("area", "")),
         ]
     )
+    configured = _keyword_ratio_score(text, commute_keywords, 15.0)
+    if configured > 0:
+        return configured
+
     if any(d in text for d in FIVE_DISTRICTS):
         return 15.0
     if any(d in text for d in SECOND_RING):
@@ -200,7 +246,7 @@ def _commute_score(job: Dict[str, Any]) -> float:
     return 0.0
 
 
-def _experience_score(job: Dict[str, Any]) -> float:
+def _experience_score(job: Dict[str, Any], experience_keywords: List[str]) -> float:
     text = " ".join(
         [
             str(job.get("experience", "")),
@@ -209,6 +255,10 @@ def _experience_score(job: Dict[str, Any]) -> float:
             str(job.get("base_info", "")),
         ]
     )
+    configured = _keyword_ratio_score(text, experience_keywords, 15.0)
+    if configured > 0:
+        return configured
+
     if re.search(r"1\s*[-~到]\s*3年|1-3年", text):
         return 15.0
     if re.search(r"3\s*[-~到]\s*5年|3-5年", text):
@@ -220,7 +270,13 @@ def _experience_score(job: Dict[str, Any]) -> float:
     return 8.0
 
 
-def _core_skill_score(job: Dict[str, Any], resume_skill_tokens: set, resume_business_tokens: set) -> Dict[str, float]:
+def _core_skill_score(
+    job: Dict[str, Any],
+    resume_text: str,
+    resume_skill_tokens: set,
+    resume_business_tokens: set,
+    core_keywords: List[str],
+) -> Dict[str, float]:
     jd_text = " ".join(
         [
             str(job.get("job_name", "")),
@@ -230,6 +286,21 @@ def _core_skill_score(job: Dict[str, Any], resume_skill_tokens: set, resume_busi
             " ".join(job.get("jd_skills", []) or []),
         ]
     )
+
+    configured = [k.strip().lower() for k in (core_keywords or []) if str(k).strip()]
+    if configured:
+        jd_lower = jd_text.lower()
+        resume_lower = (resume_text or "").lower()
+        shared_hits = [k for k in configured if k in jd_lower and k in resume_lower]
+        ratio = len(shared_hits) / len(configured)
+        skill_score = min(35.0, 35.0 * ratio)
+        business_score = min(10.0, 10.0 * ratio)
+        bonus_score = 5.0 if ratio >= 0.6 else 0.0
+        return {
+            "skill_stack_score": round(skill_score, 2),
+            "business_score": round(business_score, 2),
+            "bonus_score": round(bonus_score, 2),
+        }
 
     jd_skill_tokens = _extract_tokens(jd_text, SKILL_VOCAB)
     jd_business_tokens = _extract_tokens(jd_text, BUSINESS_VOCAB)
@@ -534,7 +605,14 @@ def _collect_near_200_jobs(config: PipelineInput, llm: LLMClient, resume_text: s
     return all_jobs
 
 
-def _score_job(resume_text: str, resume_edu: str, resume_skill_tokens: set, resume_business_tokens: set, job: Dict[str, Any]) -> Dict[str, Any]:
+def _score_job(
+    resume_text: str,
+    resume_edu: str,
+    resume_skill_tokens: set,
+    resume_business_tokens: set,
+    score_keywords: Dict[str, List[str]],
+    job: Dict[str, Any],
+) -> Dict[str, Any]:
     enriched = dict(job)
     enriched["llm_reason"] = ""
 
@@ -599,10 +677,16 @@ def _score_job(resume_text: str, resume_edu: str, resume_skill_tokens: set, resu
         enriched["bonus_score"] = 0.0
         return enriched
 
-    company_score = _company_nature_score(job)
-    commute_score = _commute_score(job)
-    exp_score = _experience_score(job)
-    core = _core_skill_score(job, resume_skill_tokens, resume_business_tokens)
+    company_score = _company_nature_score(job, score_keywords.get("company_platform", []))
+    commute_score = _commute_score(job, score_keywords.get("commute_distance", []))
+    exp_score = _experience_score(job, score_keywords.get("experience_requirement", []))
+    core = _core_skill_score(
+        job,
+        resume_text,
+        resume_skill_tokens,
+        resume_business_tokens,
+        score_keywords.get("core_match", []),
+    )
 
     total = company_score + commute_score + exp_score + core["skill_stack_score"] + core["business_score"] + core["bonus_score"]
 
@@ -632,7 +716,15 @@ def run_pipeline(config: PipelineInput) -> List[Dict[str, Any]]:
     resume_edu = config.self_education.strip() or _infer_resume_education(resume_text)
     resume_skill_tokens = _extract_tokens(resume_text, SKILL_VOCAB)
     resume_business_tokens = _extract_tokens(resume_text, BUSINESS_VOCAB)
+    score_keywords = {
+        "company_platform": _keywords_for(config, "company_platform"),
+        "commute_distance": _keywords_for(config, "commute_distance"),
+        "experience_requirement": _keywords_for(config, "experience_requirement"),
+        "core_match": _keywords_for(config, "core_match"),
+    }
     print(f"简历学历识别: {resume_edu or '未知'}")
+    score_keyword_counts = {k: len(v) for k, v in score_keywords.items()}
+    print(f"评分关键词已加载: {score_keyword_counts}")
 
     raw_jobs = _collect_near_200_jobs(config, llm, resume_text)
     raw_jobs, final_stats = _dedupe_jobs_with_stats(raw_jobs)
@@ -662,6 +754,7 @@ def run_pipeline(config: PipelineInput) -> List[Dict[str, Any]]:
                         resume_edu,
                         resume_skill_tokens,
                         resume_business_tokens,
+                        score_keywords,
                         job,
                     ): (idx, job)
                 for idx, job in enumerate(filtered_jobs, start=1)
@@ -702,6 +795,7 @@ def run_pipeline(config: PipelineInput) -> List[Dict[str, Any]]:
 
 
 def run_pipeline_from_dict(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    score_keywords = _normalize_score_keywords(data.get("score_keywords", {}))
     config = PipelineInput(
         resume_path=str(data["resume_path"]),
         llm_url=str(data["llm_url"]),
@@ -719,9 +813,10 @@ def run_pipeline_from_dict(data: Dict[str, Any]) -> List[Dict[str, Any]]:
         self_education=str(data.get("self_education", "")),
         enable_boss=bool(data.get("enable_boss", True)),
         enable_zhilian=bool(data.get("enable_zhilian", True)),
-        enable_liepin=bool(data.get("enable_liepin", True)),
+        enable_liepin=bool(data.get("enable_liepin", False)),
         enable_waiqi=bool(data.get("enable_waiqi", True)),
         enable_51job=bool(data.get("enable_51job", False)),
+        score_keywords=score_keywords,
     )
     return run_pipeline(config)
 

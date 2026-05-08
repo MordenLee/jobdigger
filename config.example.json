@@ -1,0 +1,27 @@
+{
+  "resume_path": "D:\\your_path\\cv.md",
+  "llm_url": "https://api.deepseek.com",
+  "model_name": "deepseek-v4-pro",
+  "api_key": "YOUR_API_KEY_HERE",
+  "output_file": "ranked_jobs.json",
+  "report_file": "ranked_jobs.html",
+  "report_top_n": 50,
+  "target_jobs": 200,
+  "keyword_limit": 6,
+  "score_workers": 5,
+  "max_pages_per_keyword": 2,
+  "city": "成都",
+  "self_education": "本科",
+  "enable_boss": true,
+  "enable_zhilian": true,
+  "enable_liepin": false,
+  "enable_waiqi": true,
+  "enable_51job": false,
+  "score_keywords": {
+    "company_platform": ["外企", "国企", "央企", "上市", "头部", "龙头"],
+    "commute_distance": ["锦江", "青羊", "金牛", "武侯", "成华", "高新区", "天府新区"],
+    "experience_requirement": ["1-3年", "3-5年", "经验不限", "可放宽"],
+    "core_match": ["SQL", "Python", "数据分析", "数据治理", "运营分析", "看板"]
+  },
+  "headless": false
+}
