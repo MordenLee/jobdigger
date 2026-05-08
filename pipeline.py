@@ -178,7 +178,11 @@ def _extract_tokens(text: str, vocab: List[str]) -> set:
     return found
 
 
-def _city_ok(job: Dict[str, Any]) -> bool:
+def _city_ok(job: Dict[str, Any], target_city: str) -> bool:
+    city = (target_city or "").strip()
+    if not city:
+        return True
+
     text = " ".join(
         [
             str(job.get("city", "")),
@@ -188,7 +192,7 @@ def _city_ok(job: Dict[str, Any]) -> bool:
             str(job.get("area", "")),
         ]
     )
-    return "成都" in text
+    return city in text
 
 
 def _contains_block_words(job: Dict[str, Any]) -> bool:
@@ -611,6 +615,7 @@ def _score_job(
     resume_skill_tokens: set,
     resume_business_tokens: set,
     score_keywords: Dict[str, List[str]],
+    target_city: str,
     job: Dict[str, Any],
 ) -> Dict[str, Any]:
     enriched = dict(job)
@@ -653,9 +658,9 @@ def _score_job(
         enriched["bonus_score"] = 0.0
         return enriched
 
-    if not _city_ok(job):
+    if not _city_ok(job, target_city):
         enriched["gate_pass"] = False
-        enriched["gate_reason"] = "岗位城市非成都"
+        enriched["gate_reason"] = f"岗位城市不匹配: 目标城市={target_city or '未设置'}"
         enriched["value_for_money_score"] = 0.0
         enriched["company_nature_score"] = 0.0
         enriched["commute_score"] = 0.0
@@ -755,6 +760,7 @@ def run_pipeline(config: PipelineInput) -> List[Dict[str, Any]]:
                         resume_skill_tokens,
                         resume_business_tokens,
                         score_keywords,
+                        config.city,
                         job,
                     ): (idx, job)
                 for idx, job in enumerate(filtered_jobs, start=1)
