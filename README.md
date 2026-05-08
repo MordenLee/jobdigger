@@ -1,6 +1,6 @@
 # JobMiner Code Package
 
-这个目录是 JobMiner 的核心代码，可单独作为一个 Python 包仓库发布。
+这个目录是 JobMiner 的核心代码，可单独作为一个 Python 包仓库发布。主要用于自动化爬虫获取各个网站的内容并且使用ai评分自动化给职位jd进行打分，从而帮助高效筛选工作。
 
 ## 功能概览
 
@@ -58,9 +58,4 @@ python -m jobminer.main --config config.json
 - report.py：HTML 报告
 - resume_loader.py：简历读取
 
-## 发布建议
 
-如果你只发布这个目录，建议仓库根目录再补充：
-- requirements.txt
-- config.example.json（不含真实密钥）
-- .gitignore
